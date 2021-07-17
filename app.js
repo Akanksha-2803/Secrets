@@ -7,6 +7,8 @@ const mongoose = require("mongoose");
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require("mongoose-findorcreate");
 //const bcrypt = require("bcrypt");
 //const saltRounds = 10;
 //const md5= require("md5");
@@ -38,22 +40,60 @@ mongoose.set("useCreateIndex",true);
 
 const userSchema = new mongoose.Schema({
   email: String,
-  password: String
+  password: String,
+  googleId :String,
+  secret : Array
 });
 
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 //userSchema.plugin(encrypt,{secret : process.env.SECRET ,encryptedFields :["password"]});
 
 const User = new mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());
 
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+// passport.serializeUser(User.serializeUser());
+// passport.deserializeUser(User.deserializeUser());
+passport.serializeUser(function(user, done) {
+  done(null, user.id);
+});
+
+passport.deserializeUser(function(id, done) {
+  User.findById(id, function(err, user) {
+    done(err, user);
+  });
+});
+
+
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID, //from env
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets"   //from google api of google develpoer console
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    console.log(profile);
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
 
 app.get("/", (req, res) => {
   res.render("home");
 });
+//google login
+app.get("/auth/google",
+  passport.authenticate('google', { scope: ["profile"] })  //Strategy and scope
+);
+// this get is done by google and give the route of our autherised URL
+app.get('/auth/google/secrets',
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  function(req, res) {
+    // Successful authentication, redirect home.
+    res.redirect('/secrets');
+  });
+
 
 app.get("/login", (req, res) => {
   res.render("login");
@@ -64,15 +104,58 @@ app.get("/register", (req, res) => {
 });
 
 app.get("/secrets",(req,res)=>{
+  //to see the secrets page, user should not be authenticated because it is open to all
+  User.find({"secret" : {$ne:null}},function(err,foundUsers){
+    if(err){
+      console.log(err);
+    }
+    else{
+      if(foundUsers){
+        res.render("secrets",{usersWithSecrets : foundUsers});
+      }
+    }
+  });
+})
+
+  //check user is authenticated, relying on passport, passportLocalMongoose
+  //if the user is logged in then render to secrets page , else to redirect the to login route
+  // if(req.isAuthenticated()){
+  //   res.render("secrets");
+  // }
+  // else{
+  //   res.redirect("/login");
+  // }
+
+
+app.get("/submit",(req,res)=>{
   //check user is authenticated, relying on passport, passportLocalMongoose
   //if the user is logged in then render to secrets page , else to redirect the to login route
   if(req.isAuthenticated()){
-    res.render("secrets");
+    res.render("submit");
   }
   else{
     res.redirect("/login");
   }
 });
+//when user submits a secret , they get to submit route
+app.post("/submit",(req,res)=>{
+  const submittedSecret = req.body.secret;
+  //find user in database and save it's respective secrets
+  User.findById(req.user.id, function(err, foundUsers){
+    if(err){
+      console.log(err);
+    }
+    else{
+      if(foundUsers){
+        foundUsers.secret = submittedSecret;
+        foundUsers.save(function(){
+          res.redirect("/secrets");
+        });
+      }
+    }
+  });
+});
+
 
 app.get("/logout",function(req,res){
   //deauthenticate our user and end user session
